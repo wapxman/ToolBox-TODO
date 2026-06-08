@@ -34,6 +34,31 @@ function StatCard({ icon, label, value, color }: any) {
   );
 }
 
+function BreakdownCard({ title, rows, total, color, bar }: any) {
+  return (
+    <div className="card p-5">
+      <h3 className="font-semibold text-gray-900 mb-4">{title}</h3>
+      {rows.length === 0 ? <div className="text-sm text-gray-400">Нет данных</div> : (
+        <div className="space-y-3">
+          {rows.map((r: any, i: number) => {
+            const pct = total > 0 ? Math.round((r.sum / total) * 100) : 0;
+            return (
+              <div key={i}>
+                <div className="flex items-center justify-between text-sm gap-2">
+                  <span className="font-medium text-gray-800 truncate" title={r.cp}>{r.cp}</span>
+                  <span className={`font-semibold whitespace-nowrap ${color}`}>{fmtMoney(r.sum)} <span className="text-gray-400 font-normal">· {pct}%</span></span>
+                </div>
+                {r.purpose && <div className="text-xs text-gray-500 truncate" title={r.purpose}>{r.purpose}</div>}
+                <div className="h-1.5 bg-gray-100 rounded-full mt-1 overflow-hidden"><div className={`h-full ${bar} rounded-full`} style={{ width: pct + '%' }} /></div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ============ БЕЛАЯ ============
 function WhiteTab() {
   const [imports, setImports] = useState<WhiteImport[]>([]);
@@ -43,12 +68,17 @@ function WhiteTab() {
   const [error, setError] = useState('');
   const [expanded, setExpanded] = useState<string | null>(null);
   const [txCache, setTxCache] = useState<Record<string, WhiteTx[]>>({});
+  const [allTx, setAllTx] = useState<{ counterparty: string | null; debit: number; credit: number; purpose: string | null }[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { load(); }, []);
   async function load() {
-    const { data } = await supabase.from('acc_white_imports').select('*').order('created_at', { ascending: false });
-    setImports(data || []);
+    const [impRes, txRes] = await Promise.all([
+      supabase.from('acc_white_imports').select('*').order('created_at', { ascending: false }),
+      supabase.from('acc_white_tx').select('counterparty, debit, credit, purpose'),
+    ]);
+    setImports(impRes.data || []);
+    setAllTx(txRes.data || []);
     setLoading(false);
   }
 
@@ -117,6 +147,21 @@ function WhiteTab() {
     Приход: Number(i.total_credit), Расход: Number(i.total_debit),
   }));
 
+  const cleanPurpose = (p: string | null) => (p || '').replace(/^[\d\s]+/, '').trim();
+  function breakdown(field: 'debit' | 'credit') {
+    const m: Record<string, { sum: number; purpose: string }> = {};
+    for (const t of allTx) {
+      const amt = Number((t as any)[field]) || 0;
+      if (amt <= 0) continue;
+      const cp = t.counterparty || '—';
+      if (!m[cp]) m[cp] = { sum: 0, purpose: cleanPurpose(t.purpose) };
+      m[cp].sum += amt;
+    }
+    return Object.entries(m).map(([cp, v]) => ({ cp, sum: v.sum, purpose: v.purpose })).sort((a, b) => b.sum - a.sum);
+  }
+  const expenseRows = breakdown('debit');
+  const incomeRows = breakdown('credit');
+
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-4 gap-4">
@@ -125,6 +170,13 @@ function WhiteTab() {
         <StatCard icon={<Wallet size={16} className="text-brand" />} label="Чистый поток" value={fmtMoney(totalCredit - totalDebit)} />
         <StatCard icon={<Wallet size={16} className="text-gray-400" />} label="Последний остаток" value={fmtMoney(lastBalance)} />
       </div>
+
+      {(expenseRows.length > 0 || incomeRows.length > 0) && (
+        <div className="grid md:grid-cols-2 gap-4">
+          <BreakdownCard title="Структура расходов — на что ушли деньги" rows={expenseRows} total={totalDebit} color="text-red-600" bar="bg-red-400" />
+          <BreakdownCard title="Структура приходов — откуда деньги" rows={incomeRows} total={totalCredit} color="text-emerald-600" bar="bg-emerald-400" />
+        </div>
+      )}
 
       <div className="card p-5">
         <div className="flex items-center justify-between mb-3">
